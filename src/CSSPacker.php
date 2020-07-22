@@ -11,8 +11,7 @@
 
 namespace yr4ik\Minify;
 
-use MatthiasMullie\Minify;
-use MatthiasMullie\Minify\Exceptions\FileImportException;
+use MatthiasMullie\Minify\Minify;
 use MatthiasMullie\PathConverter\ConverterInterface;
 use MatthiasMullie\PathConverter\Converter;
 
