@@ -116,7 +116,142 @@ class CSSPacker extends Minify
         return $content;
     }
 
+/**
+     * Combine CSS from import statements.
+     *
+     * @import's will be loaded and their content merged into the original file,
+     * to save HTTP requests.
+     *
+     * @param string   $source  The file to combine imports for
+     * @param string   $content The CSS content to combine imports for
+     * @param string[] $parents Parent paths, for circular reference checks
+     *
+     * @return string
+     *
+     * @throws FileImportException
+     */
+    protected function combineImports($source, $content, $parents)
+    {
+        $importRegexes = array(
+            // @import url(xxx)
+            '/
+            # import statement
+            @import
 
+            # whitespace
+            \s+
+
+                # open url()
+                url\(
+
+                    # (optional) open path enclosure
+                    (?P<quotes>["\']?)
+
+                        # fetch path
+                        (?P<path>.+?)
+
+                    # (optional) close path enclosure
+                    (?P=quotes)
+
+                # close url()
+                \)
+
+                # (optional) trailing whitespace
+                \s*
+
+                # (optional) media statement(s)
+                (?P<media>[^;]*)
+
+                # (optional) trailing whitespace
+                \s*
+
+            # (optional) closing semi-colon
+            ;?
+
+            /ix',
+
+            // @import 'xxx'
+            '/
+
+            # import statement
+            @import
+
+            # whitespace
+            \s+
+
+                # open path enclosure
+                (?P<quotes>["\'])
+
+                    # fetch path
+                    (?P<path>.+?)
+
+                # close path enclosure
+                (?P=quotes)
+
+                # (optional) trailing whitespace
+                \s*
+
+                # (optional) media statement(s)
+                (?P<media>[^;]*)
+
+                # (optional) trailing whitespace
+                \s*
+
+            # (optional) closing semi-colon
+            ;?
+
+            /ix',
+        );
+
+        // find all relative imports in css
+        $matches = array();
+        foreach ($importRegexes as $importRegex) {
+            if (preg_match_all($importRegex, $content, $regexMatches, PREG_SET_ORDER)) {
+                $matches = array_merge($matches, $regexMatches);
+            }
+        }
+
+        $search = array();
+        $replace = array();
+
+        // loop the matches
+        foreach ($matches as $match) {
+            // get the path for the file that will be imported
+            $importPath = dirname($source).'/'.$match['path'];
+
+            // only replace the import with the content if we can grab the
+            // content of the file
+            if (!$this->canImportByPath($match['path']) || !$this->canImportFile($importPath)) {
+                continue;
+            }
+
+            // check if current file was not imported previously in the same
+            // import chain.
+            if (in_array($importPath, $parents)) {
+                throw new FileImportException('Failed to import file "'.$importPath.'": circular reference detected.');
+            }
+
+            // grab referenced file & minify it (which may include importing
+            // yet other @import statements recursively)
+            $minifier = new static($importPath);
+            $minifier->setMaxImportSize($this->maxImportSize);
+            $minifier->setImportExtensions($this->importExtensions);
+            $importContent = $minifier->execute($source, $parents);
+
+            // check if this is only valid for certain media
+            if (!empty($match['media'])) {
+                $importContent = '@media '.$match['media'].'{'.$importContent.'}';
+            }
+
+            // add to replacement array
+            $search[] = $match[0];
+            $replace[] = $importContent;
+        }
+
+        // replace the import statements
+        return str_replace($search, $replace, $content);
+    }
+	
     /**
      * Import files into the CSS, base64-ized.
      *
@@ -183,7 +318,7 @@ class CSSPacker extends Minify
      *
      * @return string The minified data
      */
-    public function execute($path = null)
+    public function execute($path = null, $parents = array())
     {
         $content = '';
 
@@ -202,6 +337,8 @@ class CSSPacker extends Minify
             $css = $this->restoreExtractedData($css);
 
             $source = is_int($source) ? $this->source_root : $source;
+            $parents = $source ? array_merge($parents, array($source)) : $parents;
+            $css = $this->combineImports($source, $css, $parents);
 
 			$css = $this->importFiles($source, $css);
 			
